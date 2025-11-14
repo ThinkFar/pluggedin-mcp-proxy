@@ -53,9 +53,9 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import { createRequire } from 'module';
 import { ToolExecutionResult, ServerParameters } from "./types.js";
 import { logMcpActivity, createExecutionTimer } from "./notification-logger.js";
-import { 
-  RateLimiter, 
-  sanitizeErrorMessage, 
+import {
+  RateLimiter,
+  sanitizeErrorMessage,
   validateRequestSize,
   withTimeout
 } from "./security-utils.js";
@@ -71,10 +71,11 @@ import {
 } from "./tools/static-tools.js";
 import { StaticToolHandlers } from "./handlers/static-handlers.js";
 import { formatCustomInstructionsForDiscovery } from "./utils/custom-instructions.js";
-import { 
+import {
   parsePrefixedToolName as parseAnyPrefixedToolName,
   isValidUuid
 } from "./slug-utils.js";
+import { FEATURE_FLAGS } from "./constants.js";
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json');
@@ -102,11 +103,11 @@ export function createPrefixedToolName(serverUuid: string, originalName: string)
  */
 export function parsePrefixedToolName(toolName: string): { originalName: string; serverUuid: string } | null {
   const parsed = parseAnyPrefixedToolName(toolName);
-  
+
   if (!parsed || parsed.prefixType !== 'uuid') {
     return null; // Not a UUID-prefixed name
   }
-  
+
   return {
     originalName: parsed.originalName,
     serverUuid: parsed.serverIdentifier
@@ -299,11 +300,50 @@ const proxyCapabilitiesStaticPrompt = {
   arguments: []
 } as const;
 
+/**
+ * Helper function to build the list of enabled static tools based on feature flags
+ * @returns Array of enabled static tools
+ */
+function getEnabledStaticTools(): Tool[] {
+  const tools: Tool[] = [
+    setupStaticTool,
+    discoverToolsStaticTool,
+  ];
+
+  // Add Knowledge Base tools if enabled
+  if (FEATURE_FLAGS.ENABLE_KNOWLEDGE_BASE) {
+    tools.push(askKnowledgeBaseStaticTool);
+  }
+
+  // Add Document Management tools if enabled
+  if (FEATURE_FLAGS.ENABLE_DOCUMENTS) {
+    tools.push(
+      createDocumentStaticTool,
+      listDocumentsStaticTool,
+      searchDocumentsStaticTool,
+      getDocumentStaticTool,
+      updateDocumentStaticTool
+    );
+  }
+
+  // Add Notification Management tools if enabled
+  if (FEATURE_FLAGS.ENABLE_NOTIFICATIONS) {
+    tools.push(
+      sendNotificationStaticTool,
+      listNotificationsStaticTool,
+      markNotificationDoneStaticTool,
+      deleteNotificationStaticTool
+    );
+  }
+
+  return tools;
+}
+
 export const createServer = async () => {
   // Create rate limiters for different operations
   const toolCallRateLimiter = new RateLimiter(60000, 60); // 60 calls per minute
   const apiCallRateLimiter = new RateLimiter(60000, 100); // 100 API calls per minute
-  
+
   const server = new Server(
     {
       name: "PluggedinMCP",
@@ -322,37 +362,24 @@ export const createServer = async () => {
   server.setRequestHandler(ListToolsRequestSchema, async (request) => {
      const apiKey = getPluggedinMCPApiKey();
      const baseUrl = getPluggedinMCPApiBaseUrl();
-     
-     // If no API key, return all static tools (for Smithery compatibility)
+
+     // If no API key, return enabled static tools (for Smithery compatibility)
      // This path should be fast and not rate limited for tool discovery
      if (!apiKey || !baseUrl) {
        // Don't log to console for STDIO transport as it interferes with protocol
        return {
-         tools: [
-           setupStaticTool,
-           discoverToolsStaticTool,
-           askKnowledgeBaseStaticTool,
-           createDocumentStaticTool,
-           listDocumentsStaticTool,
-           searchDocumentsStaticTool,
-           getDocumentStaticTool,
-           updateDocumentStaticTool,
-           sendNotificationStaticTool,
-           listNotificationsStaticTool,
-           markNotificationDoneStaticTool,
-           deleteNotificationStaticTool
-         ],
+         tools: getEnabledStaticTools(),
          nextCursor: undefined
        };
      }
-     
+
      // Rate limit check only for authenticated API calls
      if (!apiCallRateLimiter.checkLimit()) {
        throw new Error("Rate limit exceeded. Please try again later.");
      }
-     
+
      let fetchedTools: (Tool & { _serverUuid: string, _serverName?: string })[] = [];
-     
+
      try {
 
        // Build API URL with prefixing parameter
@@ -404,12 +431,12 @@ export const createServer = async () => {
             debugError(`[ListTools Handler] Missing tool name or UUID for tool: ${tool.name}`);
          }
        });
-       
+
        // Fetch server configurations with custom instructions
        let serverContexts = new Map();
        try {
          const serverParams = await getMcpServers(false);
-         
+
          // Build server contexts with parsed constraints
          const { buildServerContextsMap } = await import('./utils/custom-instructions.js');
          serverContexts = buildServerContextsMap(Object.values(serverParams));
@@ -417,7 +444,7 @@ export const createServer = async () => {
          // Log error but continue without custom instructions
          debugError('[ListTools Handler] Failed to fetch server contexts:', contextError);
        }
-       
+
        // Prepare the response payload with custom instructions and constraints in metadata
        const toolsForClient: Tool[] = fetchedTools.map(({ _serverUuid, _serverName, ...rest }) => {
          // Add custom instructions and constraints to tool metadata if available
@@ -443,19 +470,9 @@ export const createServer = async () => {
 
        // Note: Pagination not handled here, assumes API returns all tools
 
-       // Always include the static tools
+       // Include enabled static tools based on feature flags
        const allToolsForClient = [
-         discoverToolsStaticTool, 
-         askKnowledgeBaseStaticTool,
-         createDocumentStaticTool,
-         listDocumentsStaticTool,
-         searchDocumentsStaticTool,
-         getDocumentStaticTool,
-         updateDocumentStaticTool,
-         sendNotificationStaticTool,
-         listNotificationsStaticTool,
-         markNotificationDoneStaticTool,
-         deleteNotificationStaticTool,
+         ...getEnabledStaticTools(),
          ...toolsForClient
        ];
 
@@ -567,7 +584,7 @@ export const createServer = async () => {
                         axios.get(`${baseUrl}/api/prompts`, { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 10000 }),
                         axios.get(`${baseUrl}/api/resource-templates`, { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 10000 })
                     ]);
-                    
+
                     const [toolsResponse, resourcesResponse, promptsResponse, templatesResponse] = await withTimeout(apiRequests, 15000);
 
                     const toolsCount = toolsResponse.data?.tools?.length || (Array.isArray(toolsResponse.data) ? toolsResponse.data.length : 0);
@@ -582,21 +599,21 @@ export const createServer = async () => {
                         const staticToolsCount = 3; // Always have 3 static tools
                         const totalToolsCount = toolsCount + staticToolsCount;
                         existingDataSummary = `Found cached data: ${toolsCount} dynamic tools + ${staticToolsCount} static tools = ${totalToolsCount} total tools, ${resourcesCount} resources, ${promptsCount} prompts, ${templatesCount} templates`;
-                        
-                        const cacheMessage = server_uuid 
+
+                        const cacheMessage = server_uuid
                             ? `Returning cached discovery data for server ${server_uuid}. ${existingDataSummary}. Use force_refresh=true to update.\n\n`
                             : `Returning cached discovery data for all servers. ${existingDataSummary}. Use force_refresh=true to update.\n\n`;
 
                         // Format the actual data for the response
                         let dataContent = cacheMessage;
-                        
+
                         // Add static built-in tools section (always available)
                         dataContent += `## 🔧 Static Built-in Tools (Always Available):\n`;
                         dataContent += `1. **pluggedin_discover_tools** - Triggers discovery of tools (and resources/templates) for configured MCP servers in the Pluggedin App\n`;
                         dataContent += `2. **pluggedin_ask_knowledge_base** - Performs a RAG query against documents in the Pluggedin App\n`;
                         dataContent += `3. **pluggedin_send_notification** - Send custom notifications through the Plugged.in system with optional email delivery\n`;
                         dataContent += `\n`;
-                        
+
                         // Add dynamic tools section (from MCP servers)
                         if (toolsCount > 0) {
                             const tools = toolsResponse.data?.tools || toolsResponse.data || [];
@@ -613,8 +630,8 @@ export const createServer = async () => {
                             dataContent += `## ⚡ Dynamic MCP Tools (0) - From Connected Servers:\n`;
                             dataContent += `No dynamic tools available. Add MCP servers to get more tools.\n\n`;
                         }
-                        
-                        // Add prompts section  
+
+                        // Add prompts section
                         if (promptsCount > 0) {
                             dataContent += `## 💬 Available Prompts (${promptsCount}):\n`;
                             promptsResponse.data.forEach((prompt: { name: string; description?: string }, index: number) => {
@@ -626,7 +643,7 @@ export const createServer = async () => {
                             });
                             dataContent += `\n`;
                         }
-                        
+
                         // Add resources section
                         if (resourcesCount > 0) {
                             dataContent += `## 📄 Available Resources (${resourcesCount}):\n`;
@@ -642,7 +659,7 @@ export const createServer = async () => {
                             });
                             dataContent += `\n`;
                         }
-                        
+
                         // Add templates section
                         if (templatesCount > 0) {
                             dataContent += `## 📋 Available Resource Templates (${templatesCount}):\n`;
@@ -682,11 +699,11 @@ export const createServer = async () => {
                     }
                 } catch (cacheError: unknown) {
                     // Error checking cache, show static tools and proceed with discovery
-                    
+
                     // Show static tools even when cache check fails
                     const staticToolsCount = 3;
                     const cacheErrorMessage = `Cache check failed, showing static tools. Will run discovery for dynamic tools.\n\n`;
-                    
+
                     let staticContent = cacheErrorMessage;
                     staticContent += `## 🔧 Static Built-in Tools (Always Available):\n`;
                     staticContent += `1. **pluggedin_discover_tools** - Triggers discovery of tools (and resources/templates) for configured MCP servers in the Pluggedin App\n`;
@@ -747,7 +764,7 @@ export const createServer = async () => {
 
                         // Get current cached data to show immediately
                         let forceRefreshContent = "";
-                        
+
                         try {
                             // Fetch current cached data (use shorter timeout since this is just cache check)
                             const [toolsResponse, resourcesResponse, promptsResponse, templatesResponse] = await Promise.all([
@@ -764,20 +781,20 @@ export const createServer = async () => {
 
                             const staticToolsCount = 3;
                             const totalToolsCount = toolsCount + staticToolsCount;
-                            
-                            const refreshMessage = server_uuid 
+
+                            const refreshMessage = server_uuid
                                 ? `🔄 Force refresh initiated for server ${server_uuid}. Discovery is running in background.\n\nShowing current cached data (${toolsCount} dynamic tools + ${staticToolsCount} static tools = ${totalToolsCount} total tools, ${resourcesCount} resources, ${promptsCount} prompts, ${templatesCount} templates):\n\n`
                                 : `🔄 Force refresh initiated for all servers. Discovery is running in background.\n\nShowing current cached data (${toolsCount} dynamic tools + ${staticToolsCount} static tools = ${totalToolsCount} total tools, ${resourcesCount} resources, ${promptsCount} prompts, ${templatesCount} templates):\n\n`;
 
                             forceRefreshContent = refreshMessage;
-                            
+
                             // Add static built-in tools section (always available)
                             forceRefreshContent += `## 🔧 Static Built-in Tools (Always Available):\n`;
                             forceRefreshContent += `1. **pluggedin_discover_tools** - Triggers discovery of tools (and resources/templates) for configured MCP servers in the Pluggedin App\n`;
                             forceRefreshContent += `2. **pluggedin_ask_knowledge_base** - Performs a RAG query against documents in the Pluggedin App\n`;
                             forceRefreshContent += `3. **pluggedin_send_notification** - Send custom notifications through the Plugged.in system with optional email delivery\n`;
                             forceRefreshContent += `\n`;
-                            
+
                             // Add dynamic tools section (from MCP servers)
                             if (toolsCount > 0) {
                                 const tools = toolsResponse.data?.tools || toolsResponse.data || [];
@@ -794,8 +811,8 @@ export const createServer = async () => {
                                 forceRefreshContent += `## ⚡ Dynamic MCP Tools (0) - From Connected Servers:\n`;
                                 forceRefreshContent += `No dynamic tools available. Add MCP servers to get more tools.\n\n`;
                             }
-                            
-                            // Add prompts section  
+
+                            // Add prompts section
                             if (promptsCount > 0) {
                                 forceRefreshContent += `## 💬 Available Prompts (${promptsCount}):\n`;
                                 promptsResponse.data.forEach((prompt: { name: string; description?: string }, index: number) => {
@@ -807,7 +824,7 @@ export const createServer = async () => {
                                 });
                                 forceRefreshContent += `\n`;
                             }
-                            
+
                             // Add resources section
                             if (resourcesCount > 0) {
                                 forceRefreshContent += `## 📄 Available Resources (${resourcesCount}):\n`;
@@ -823,7 +840,7 @@ export const createServer = async () => {
                                 });
                                 forceRefreshContent += `\n`;
                             }
-                            
+
                             // Add templates section
                             if (templatesCount > 0) {
                                 forceRefreshContent += `## 📋 Available Resource Templates (${templatesCount}):\n`;
@@ -839,18 +856,18 @@ export const createServer = async () => {
                                 });
                                 forceRefreshContent += `\n`;
                             }
-                            
+
                             // Add custom instructions section
                             forceRefreshContent += await formatCustomInstructionsForDiscovery();
-                            
+
                             forceRefreshContent += `📝 **Note**: Fresh discovery is running in background. Call pluggedin_discover_tools() again in 10-30 seconds to see if any new tools were discovered.`;
 
                         } catch (cacheError: unknown) {
                             // If we can't get cached data, just show static tools
-                            forceRefreshContent = server_uuid 
+                            forceRefreshContent = server_uuid
                                 ? `🔄 Force refresh initiated for server ${server_uuid}. Discovery is running in background.\n\nCould not retrieve cached data, showing static tools:\n\n`
                                 : `🔄 Force refresh initiated for all servers. Discovery is running in background.\n\nCould not retrieve cached data, showing static tools:\n\n`;
-                                
+
                             forceRefreshContent += `## 🔧 Static Built-in Tools (Always Available):\n`;
                             forceRefreshContent += `1. **pluggedin_discover_tools** - Triggers discovery of tools (and resources/templates) for configured MCP servers in the Pluggedin App\n`;
                             forceRefreshContent += `2. **pluggedin_ask_knowledge_base** - Performs a RAG query against documents in the Pluggedin App\n`;
@@ -867,7 +884,7 @@ export const createServer = async () => {
                             success: true,
                             executionTime: timer.stop(),
                         }).catch(() => {}); // Ignore notification errors
-                        
+
                         return {
                             content: [{ type: "text", text: forceRefreshContent }],
                             isError: false,
@@ -876,7 +893,7 @@ export const createServer = async () => {
                     } catch (triggerError: any) {
                         // Even trigger failed, return error
                         const errorMsg = `Failed to trigger background discovery: ${triggerError.message}`;
-                        
+
                         // Log failed trigger
                         logMcpActivity({
                             action: 'tool_call',
@@ -887,7 +904,7 @@ export const createServer = async () => {
                             errorMessage: errorMsg,
                             executionTime: timer.stop(),
                         }).catch(() => {}); // Ignore notification errors
-                        
+
                         throw new Error(errorMsg);
                     }
                 } else {
@@ -901,7 +918,7 @@ export const createServer = async () => {
                         // Return success message from the discovery API response
                         const baseMessage = discoveryResponse.data?.message || "Discovery process initiated.";
                         const contextMessage = `${existingDataSummary}. ${baseMessage}\n\nNote: You can call pluggedin_discover_tools again to see the cached results including both static and dynamic tools.`;
-                        
+
                         // Log successful discovery
                         logMcpActivity({
                             action: 'tool_call',
@@ -911,7 +928,7 @@ export const createServer = async () => {
                             success: true,
                             executionTime: timer.stop(),
                         }).catch(() => {}); // Ignore notification errors
-                        
+
                         return {
                             content: [{ type: "text", text: contextMessage }],
                             isError: false,
@@ -928,7 +945,7 @@ export const createServer = async () => {
                             errorMessage: apiError instanceof Error ? apiError.message : String(apiError),
                             executionTime: timer.stop(),
                         }).catch(() => {}); // Ignore notification errors
-                        
+
                          const errorMsg = axios.isAxiosError(apiError)
                             ? `API Error (${apiError.response?.status}): ${apiError.response?.data?.error || apiError.message}`
                             : (apiError instanceof Error ? apiError.message : 'Unknown error');
@@ -940,6 +957,10 @@ export const createServer = async () => {
 
         // Handle static RAG query tool
         if (requestedToolName === askKnowledgeBaseStaticTool.name) {
+            if (!FEATURE_FLAGS.ENABLE_KNOWLEDGE_BASE) {
+                throw new Error("Knowledge Base tools are not enabled. Set PLUGGEDIN_ENABLE_KNOWLEDGE_BASE=true to enable.");
+            }
+
             const validatedArgs = AskKnowledgeBaseInputSchema.parse(args ?? {}); // Validate args
 
             const apiKey = getPluggedinMCPApiKey();
@@ -1040,7 +1061,7 @@ export const createServer = async () => {
                      errorMessage: apiError instanceof Error ? apiError.message : String(apiError),
                      executionTime: timer.stop(),
                  }).catch(() => {}); // Ignore notification errors
-                 
+
                  // Sanitized error message to prevent information disclosure
                  const errorMsg = axios.isAxiosError(apiError) && apiError.response?.status
                     ? `RAG service error (${apiError.response.status})`
@@ -1051,6 +1072,10 @@ export const createServer = async () => {
 
         // Handle static send notification tool
         if (requestedToolName === sendNotificationStaticTool.name) {
+            if (!FEATURE_FLAGS.ENABLE_NOTIFICATIONS) {
+                throw new Error("Notification Management tools are not enabled. Set PLUGGEDIN_ENABLE_NOTIFICATIONS=true to enable.");
+            }
+
             const validatedArgs = SendNotificationInputSchema.parse(args ?? {}); // Validate args
 
             const apiKey = getPluggedinMCPApiKey();
@@ -1071,7 +1096,7 @@ export const createServer = async () => {
                     severity: validatedArgs.severity,
                     sendEmail: validatedArgs.sendEmail,
                 }, {
-                    headers: { 
+                    headers: {
                         Authorization: `Bearer ${apiKey}`,
                         'Content-Type': 'application/json'
                     },
@@ -1081,7 +1106,7 @@ export const createServer = async () => {
                 // The API returns success confirmation
                 const responseData = notificationResponse.data;
                 const responseText = responseData?.message || "Notification sent successfully";
-                
+
                 // Log successful notification
                 logMcpActivity({
                     action: 'tool_call',
@@ -1091,7 +1116,7 @@ export const createServer = async () => {
                     success: true,
                     executionTime: timer.stop(),
                 }).catch(() => {}); // Ignore notification errors
-                
+
                 return {
                     content: [{ type: "text", text: responseText }],
                     isError: false,
@@ -1108,7 +1133,7 @@ export const createServer = async () => {
                      errorMessage: apiError instanceof Error ? apiError.message : String(apiError),
                      executionTime: timer.stop(),
                  }).catch(() => {}); // Ignore notification errors
-                 
+
                  // Sanitized error message
                  const errorMsg = axios.isAxiosError(apiError) && apiError.response?.status
                     ? `Notification service error (${apiError.response.status})`
@@ -1119,6 +1144,10 @@ export const createServer = async () => {
 
         // Handle static list notifications tool
         if (requestedToolName === listNotificationsStaticTool.name) {
+            if (!FEATURE_FLAGS.ENABLE_NOTIFICATIONS) {
+                throw new Error("Notification Management tools are not enabled. Set PLUGGEDIN_ENABLE_NOTIFICATIONS=true to enable.");
+            }
+
             const validatedArgs = ListNotificationsInputSchema.parse(args ?? {}); // Validate args
 
             const apiKey = getPluggedinMCPApiKey();
@@ -1142,21 +1171,21 @@ export const createServer = async () => {
             try {
                 // Make GET request to list notifications
                 const notificationResponse = await axios.get(notificationApiUrl, {
-                    headers: { 
+                    headers: {
                         Authorization: `Bearer ${apiKey}`,
                     },
                     timeout: 15000,
                 });
 
                 const notifications = notificationResponse.data?.notifications || [];
-                
+
                 // Format the response for better readability
                 let responseText = `Found ${notifications.length} notification${notifications.length !== 1 ? 's' : ''}`;
                 if (validatedArgs.onlyUnread) {
                     responseText += ' (unread only)';
                 }
                 responseText += ':\n\n';
-                
+
                 if (notifications.length === 0) {
                     responseText += 'No notifications found.';
                 } else {
@@ -1174,7 +1203,7 @@ export const createServer = async () => {
                     });
                     responseText += '💡 **Tip**: Use the UUID shown in the ID field when marking as read or deleting notifications.';
                 }
-                
+
                 // Log successful list
                 logMcpActivity({
                     action: 'tool_call',
@@ -1184,7 +1213,7 @@ export const createServer = async () => {
                     success: true,
                     executionTime: timer.stop(),
                 }).catch(() => {}); // Ignore notification errors
-                
+
                 return {
                     content: [{ type: "text", text: responseText }],
                     isError: false,
@@ -1201,7 +1230,7 @@ export const createServer = async () => {
                      errorMessage: apiError instanceof Error ? apiError.message : String(apiError),
                      executionTime: timer.stop(),
                  }).catch(() => {}); // Ignore notification errors
-                 
+
                  // Sanitized error message
                  const errorMsg = axios.isAxiosError(apiError) && apiError.response?.status
                     ? `Notification service error (${apiError.response.status})`
@@ -1212,6 +1241,10 @@ export const createServer = async () => {
 
         // Handle static mark notification as read tool
         if (requestedToolName === markNotificationDoneStaticTool.name) {
+            if (!FEATURE_FLAGS.ENABLE_NOTIFICATIONS) {
+                throw new Error("Notification Management tools are not enabled. Set PLUGGEDIN_ENABLE_NOTIFICATIONS=true to enable.");
+            }
+
             const validatedArgs = MarkNotificationDoneInputSchema.parse(args ?? {}); // Validate args
 
             const apiKey = getPluggedinMCPApiKey();
@@ -1226,14 +1259,14 @@ export const createServer = async () => {
             try {
                 // Make PATCH request to mark notification as read
                 const notificationResponse = await axios.patch(notificationApiUrl, {}, {
-                    headers: { 
+                    headers: {
                         Authorization: `Bearer ${apiKey}`,
                     },
                     timeout: 15000,
                 });
 
                 const responseText = notificationResponse.data?.message || "Notification marked as done";
-                
+
                 // Log successful mark as done
                 logMcpActivity({
                     action: 'tool_call',
@@ -1243,7 +1276,7 @@ export const createServer = async () => {
                     success: true,
                     executionTime: timer.stop(),
                 }).catch(() => {}); // Ignore notification errors
-                
+
                 return {
                     content: [{ type: "text", text: responseText }],
                     isError: false,
@@ -1260,7 +1293,7 @@ export const createServer = async () => {
                      errorMessage: apiError instanceof Error ? apiError.message : String(apiError),
                      executionTime: timer.stop(),
                  }).catch(() => {}); // Ignore notification errors
-                 
+
                  // Handle specific error cases
                  let errorMsg = "Failed to mark notification as read";
                  if (axios.isAxiosError(apiError)) {
@@ -1276,6 +1309,10 @@ export const createServer = async () => {
 
         // Handle static delete notification tool
         if (requestedToolName === deleteNotificationStaticTool.name) {
+            if (!FEATURE_FLAGS.ENABLE_NOTIFICATIONS) {
+                throw new Error("Notification Management tools are not enabled. Set PLUGGEDIN_ENABLE_NOTIFICATIONS=true to enable.");
+            }
+
             const validatedArgs = DeleteNotificationInputSchema.parse(args ?? {}); // Validate args
 
             const apiKey = getPluggedinMCPApiKey();
@@ -1290,14 +1327,14 @@ export const createServer = async () => {
             try {
                 // Make DELETE request to delete notification
                 const notificationResponse = await axios.delete(notificationApiUrl, {
-                    headers: { 
+                    headers: {
                         Authorization: `Bearer ${apiKey}`,
                     },
                     timeout: 15000,
                 });
 
                 const responseText = notificationResponse.data?.message || "Notification deleted successfully";
-                
+
                 // Log successful delete
                 logMcpActivity({
                     action: 'tool_call',
@@ -1307,7 +1344,7 @@ export const createServer = async () => {
                     success: true,
                     executionTime: timer.stop(),
                 }).catch(() => {}); // Ignore notification errors
-                
+
                 return {
                     content: [{ type: "text", text: responseText }],
                     isError: false,
@@ -1324,7 +1361,7 @@ export const createServer = async () => {
                      errorMessage: apiError instanceof Error ? apiError.message : String(apiError),
                      executionTime: timer.stop(),
                  }).catch(() => {}); // Ignore notification errors
-                 
+
                  // Handle specific error cases
                  let errorMsg = "Failed to delete notification";
                  if (axios.isAxiosError(apiError)) {
@@ -1347,8 +1384,11 @@ export const createServer = async () => {
             getDocumentStaticTool.name,
             updateDocumentStaticTool.name
         ];
-        
+
         if (documentTools.includes(requestedToolName)) {
+            if (!FEATURE_FLAGS.ENABLE_DOCUMENTS) {
+                throw new Error("Document Management tools are not enabled. Set PLUGGEDIN_ENABLE_DOCUMENTS=true to enable.");
+            }
             const result = await staticHandlers.handleStaticTool(requestedToolName, args);
             if (result) {
                 return result;
@@ -1372,7 +1412,7 @@ export const createServer = async () => {
                 // Try to find the tool by its original name and server identifier
                 const originalToolInfo = Object.values(toolToServerMap).find(
                     info => info.originalName === parsed.originalName && (
-                        parsed.prefixType === 'slug' || 
+                        parsed.prefixType === 'slug' ||
                         (parsed.prefixType === 'uuid' && info.serverUuid === parsed.serverIdentifier)
                     )
                 );
@@ -1401,7 +1441,7 @@ export const createServer = async () => {
 
         // Get the downstream server session
         const serverParams = await getMcpServers(true);
-        
+
         const params = serverParams[serverUuid];
         if (!params) {
             throw new Error(`Configuration not found for server UUID: ${serverUuid} associated with tool ${requestedToolName}`);
@@ -1427,7 +1467,7 @@ export const createServer = async () => {
                     throw new Error(validation.reason || 'Tool execution blocked by server constraints');
                 }
             }
-            
+
             // Get the full context for metadata
             const context = staticHandlers.getServerContextByUuid(serverUuid);
             if (context) {
@@ -1439,16 +1479,16 @@ export const createServer = async () => {
                 };
             }
         }
-        
+
         // Proxy the call to the downstream server using the original tool name
         const timer = createExecutionTimer();
-        
+
         try {
             // Include server context in metadata if available
-            const enhancedMeta = serverContext 
-                ? { ...meta, serverContext } 
+            const enhancedMeta = serverContext
+                ? { ...meta, serverContext }
                 : meta;
-            
+
             const result = await session.client.request(
                 { method: "tools/call", params: { name: originalName, arguments: args, _meta: enhancedMeta } },
                  CompatibilityCallToolResultSchema
@@ -1477,7 +1517,7 @@ export const createServer = async () => {
                 errorMessage: toolError instanceof Error ? toolError.message : String(toolError),
                 executionTime: timer.stop(),
             }).catch(() => {}); // Ignore notification errors
-            
+
             // Re-throw the original error
             throw toolError;
         }
@@ -1507,7 +1547,7 @@ export const createServer = async () => {
     // Handle static proxy capabilities prompt first
     if (name === proxyCapabilitiesStaticPrompt.name) {
       const timer = createExecutionTimer();
-      
+
       try {
         // Log successful static prompt retrieval
         logMcpActivity({
@@ -1518,7 +1558,7 @@ export const createServer = async () => {
           success: true,
           executionTime: timer.stop(),
         }).catch(() => {}); // Ignore notification errors
-        
+
         return {
           messages: [
             {
@@ -1533,7 +1573,7 @@ The Plugged.in MCP Proxy is a powerful gateway that provides access to multiple 
 
 ### 1. **pluggedin_discover_tools**
 - **Purpose**: Trigger discovery of tools and resources from configured MCP servers
-- **Parameters**: 
+- **Parameters**:
   - \`server_uuid\` (optional): Discover from specific server, or all servers if omitted
   - \`force_refresh\` (optional): Set to true to trigger background discovery and return immediately (defaults to false)
 - **Usage**: Returns cached data instantly if available. Use \`force_refresh=true\` to update data in background, then call again without force_refresh to see results.
@@ -1619,7 +1659,7 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
           errorMessage: error instanceof Error ? error.message : String(error),
           executionTime: timer.stop(),
         }).catch(() => {}); // Ignore notification errors
-        
+
         throw error;
       }
     }
@@ -1634,7 +1674,7 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
       // Check for both old and new naming patterns for custom instructions
       const isOldInstructionFormat = name.startsWith(instructionPrefix);
       const isNewInstructionFormat = name.endsWith(systemContextSuffix);
-      
+
       if (isOldInstructionFormat || isNewInstructionFormat) {
         // --- Handle Custom Instruction Request ---
         const instructionData = instructionToServerMap[name];
@@ -1643,20 +1683,20 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
         }
 
         const timer = createExecutionTimer();
-        
+
         try {
           // Custom instructions from the API should have an instruction field
           const messages: PromptMessage[] = [];
-          
+
           // First check if there's an instruction field (the actual content)
           if (instructionData.instruction) {
-            
+
             // Parse the instruction content - it should be a JSON array
             try {
-              const parsedInstruction = typeof instructionData.instruction === 'string' 
+              const parsedInstruction = typeof instructionData.instruction === 'string'
                 ? JSON.parse(instructionData.instruction)
                 : instructionData.instruction;
-                
+
               if (Array.isArray(parsedInstruction)) {
                 for (const msg of parsedInstruction) {
                   // Handle simple strings (for backward compatibility or direct input)
@@ -1715,7 +1755,7 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
             } catch (parseError) {
               // Log the parse error for debugging
               debugError(`[GetPrompt Handler] Failed to parse instruction for ${name}:`, parseError);
-              
+
               // Return a clear warning message about the parsing failure
               // Convert system message to user message with prefix
               messages.push({
@@ -1725,14 +1765,14 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
                   text: `System: Warning: Unable to parse instruction from API. The instruction data may be malformed. Raw value: ${JSON.stringify(instructionData.instruction).substring(0, 200)}...`
                 }
               });
-              
+
               // Include the raw instruction as fallback
               messages.push({
                 role: "assistant",
                 content: {
                   type: "text",
-                  text: typeof instructionData.instruction === 'string' 
-                    ? instructionData.instruction 
+                  text: typeof instructionData.instruction === 'string'
+                    ? instructionData.instruction
                     : JSON.stringify(instructionData.instruction)
                 }
               });
@@ -1775,7 +1815,7 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
            const errorMsg = axios.isAxiosError(apiError)
               ? `API Error (${apiError.response?.status}) fetching instruction ${name}: ${apiError.response?.data?.error || apiError.message}`
               : apiError instanceof Error ? apiError.message : String(apiError);
-              
+
            // Log failed custom instruction retrieval
            logMcpActivity({
              action: 'prompt_get',
@@ -1786,7 +1826,7 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
              errorMessage: errorMsg,
              executionTime: timer.stop(),
            }).catch(() => {}); // Ignore notification errors
-           
+
            throw new Error(`Failed to fetch custom instruction details: ${errorMsg}`);
         }
 
@@ -1807,7 +1847,7 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
         // 2. Get FRESH server configuration using the same method as tools
         const serverParamsMap = await getMcpServers(true);
         const serverParams = serverParamsMap[resolvedData.uuid];
-        
+
         if (!serverParams) {
           throw new Error(`Configuration not found for server UUID: ${resolvedData.uuid} associated with prompt ${name}`);
         }
@@ -1824,13 +1864,13 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
           }
           // Use the refreshed session
           const timer = createExecutionTimer();
-          
+
           try {
             const result = await refreshedSession.client.request(
               { method: "prompts/get", params: { name, arguments: args, _meta: meta } },
               GetPromptResultSchema
             );
-            
+
             // Log successful prompt retrieval
             logMcpActivity({
               action: 'prompt_get',
@@ -1840,7 +1880,7 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
               success: true,
               executionTime: timer.stop(),
             }).catch(() => {}); // Ignore notification errors
-            
+
             return result;
           } catch (promptError) {
             // Log failed prompt retrieval
@@ -1853,19 +1893,19 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
               errorMessage: promptError instanceof Error ? promptError.message : String(promptError),
               executionTime: timer.stop(),
             }).catch(() => {}); // Ignore notification errors
-            
+
             throw promptError;
           }
         } else {
           // Use the existing session
           const timer = createExecutionTimer();
-          
+
           try {
             const result = await session.client.request(
               { method: "prompts/get", params: { name, arguments: args, _meta: meta } },
               GetPromptResultSchema
             );
-            
+
             // Log successful prompt retrieval
             logMcpActivity({
               action: 'prompt_get',
@@ -1875,7 +1915,7 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
               success: true,
               executionTime: timer.stop(),
             }).catch(() => {}); // Ignore notification errors
-            
+
             return result;
           } catch (promptError) {
             // Log failed prompt retrieval
@@ -1888,7 +1928,7 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
               errorMessage: promptError instanceof Error ? promptError.message : String(promptError),
               executionTime: timer.stop(),
             }).catch(() => {}); // Ignore notification errors
-            
+
             throw promptError;
           }
         }
@@ -2025,13 +2065,13 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
             }
              // Use the refreshed session
              const timer = createExecutionTimer();
-             
+
              try {
                const result = await refreshedSession.client.request(
                    { method: "resources/read", params: { uri, _meta: meta } }, // Pass original URI and meta
                    ReadResourceResultSchema
                );
-               
+
                // Log successful resource read
                logMcpActivity({
                  action: 'resource_read',
@@ -2041,7 +2081,7 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
                  success: true,
                  executionTime: timer.stop(),
                }).catch(() => {}); // Ignore notification errors
-               
+
                return result;
              } catch (resourceError) {
                // Log failed resource read
@@ -2054,19 +2094,19 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
                  errorMessage: resourceError instanceof Error ? resourceError.message : String(resourceError),
                  executionTime: timer.stop(),
                }).catch(() => {}); // Ignore notification errors
-               
+
                throw resourceError;
              }
         } else {
              // Use the existing session
              const timer = createExecutionTimer();
-             
+
              try {
                const result = await session.client.request(
                    { method: "resources/read", params: { uri, _meta: meta } }, // Pass original URI and meta
                    ReadResourceResultSchema
                );
-               
+
                // Log successful resource read
                logMcpActivity({
                  action: 'resource_read',
@@ -2076,7 +2116,7 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
                  success: true,
                  executionTime: timer.stop(),
                }).catch(() => {}); // Ignore notification errors
-               
+
                return result;
              } catch (resourceError) {
                // Log failed resource read
@@ -2089,7 +2129,7 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
                  errorMessage: resourceError instanceof Error ? resourceError.message : String(resourceError),
                  executionTime: timer.stop(),
                }).catch(() => {}); // Ignore notification errors
-               
+
                throw resourceError;
              }
         }
@@ -2151,15 +2191,15 @@ The proxy acts as a unified gateway to all your MCP capabilities while providing
     try {
       // Clean up sessions
       await cleanupAllSessions();
-      
+
       // Clear tool mappings
       Object.keys(toolToServerMap).forEach(key => delete toolToServerMap[key]);
       Object.keys(instructionToServerMap).forEach(key => delete instructionToServerMap[key]);
-      
+
       // Reset rate limiters
       toolCallRateLimiter.reset();
       apiCallRateLimiter.reset();
-      
+
     } catch (error) {
       debugError("[Proxy Cleanup] Error during cleanup:", error);
     }

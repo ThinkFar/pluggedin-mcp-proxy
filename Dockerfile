@@ -3,6 +3,9 @@ FROM node:20-slim AS builder
 
 WORKDIR /app
 
+# Suppress npm update notifier in Docker builds
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
+
 # Copy package files
 COPY package*.json ./
 
@@ -19,6 +22,9 @@ RUN npm run build
 FROM node:20-slim
 
 WORKDIR /app
+
+# Suppress npm update notifier in Docker builds
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 
 # Copy package files
 COPY package*.json ./

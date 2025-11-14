@@ -21,16 +21,16 @@ This proxy enables seamless integration with any MCP client (Claude, Cline, Curs
 
 ## Hub Pillars: Knowledge · Memory · Tools · Proxy
 
-**Knowledge (RAG v2 / AI Document Exchange)**  
+**Knowledge (RAG v2 / AI Document Exchange)**
 Search and ground model outputs with unified, attribution‑aware document retrieval. MCP servers can create and manage documents in your library with versioning, visibility controls, and model attribution. Use the built‑in RAG to search across all connected sources and return relevant snippets and metadata.
 
-**Memory (Persistent AI Memory)**  
+**Memory (Persistent AI Memory)**
 Long‑lived, workspace/profile‑scoped memory that survives sessions. The hub integrates with the plugged.in App's persistent memory so agent actions and insights can be stored and recalled across tasks. Built‑in memory tools are on the roadmap to expose low‑friction `get/put/search` patterns under the same auth model.
 
-**Tools**  
+**Tools**
 Aggregate built‑in capabilities with downstream MCP servers (STDIO, SSE, Streamable HTTP). Tool discovery is cached and can be refreshed on demand; hub‑level discovery returns a unified catalog for any MCP client. The hub supports tools, resources, resource templates, and prompts.
 
-**Proxy**  
+**Proxy**
 One connection for every client. Run as STDIO (default) or Streamable HTTP with optional API auth and stateless mode. Works with Claude Desktop, Cline, Cursor, MCP Inspector, and more; keep your existing client configs while centralizing policies and telemetry.
 
 > ⭐ **If you find this project useful, please consider giving it a star on GitHub!** It helps us reach more developers and motivates us to keep improving.
@@ -62,7 +62,7 @@ One connection for every client. Run as STDIO (default) or Streamable HTTP with 
   - Semantic search with relevance scoring
   - Automatic snippet generation with keyword highlighting
   - Support for filtering: `ai_generated`, `upload`, or `api` sources
-- **Document Management via MCP**: 
+- **Document Management via MCP**:
   - Set document visibility: private, workspace, or public
   - Parent-child relationships for document versions
   - Profile-based organization alongside project-based scoping
@@ -106,12 +106,29 @@ One connection for every client. Run as STDIO (default) or Streamable HTTP with 
 
 The proxy provides two distinct categories of tools:
 
-### 🔧 Static Built-in Tools (Always Available)
-These tools are built into the proxy and work without any server configuration:
+### 🔧 Core Static Tools (Always Available)
+These tools are always enabled and work without any server configuration:
+- **`pluggedin_setup`** - Get started guide and configuration help
 - **`pluggedin_discover_tools`** - Smart discovery with caching for instant results
-- **`pluggedin_rag_query`** - RAG v2 search across your documents with AI filtering capabilities
-- **`pluggedin_send_notification`** - Send notifications with optional email delivery
-- **`pluggedin_create_document`** - (Coming Soon) Create AI-generated documents in your library
+
+### 🎯 Optional Static Tools (Opt-in via Environment Variables)
+These tools can be enabled by setting specific environment variables:
+
+**Knowledge Base / RAG** (Set `PLUGGEDIN_ENABLE_KNOWLEDGE_BASE=true`):
+- **`pluggedin_ask_knowledge_base`** - Ask questions and get AI-generated answers from your knowledge base
+
+**Document Management** (Set `PLUGGEDIN_ENABLE_DOCUMENTS=true`):
+- **`pluggedin_create_document`** - Create and save AI-generated documents
+- **`pluggedin_list_documents`** - List documents with filtering options
+- **`pluggedin_search_documents`** - Search for specific documents
+- **`pluggedin_get_document`** - Retrieve full content of a document by ID
+- **`pluggedin_update_document`** - Update or append to existing documents
+
+**Notification Management** (Set `PLUGGEDIN_ENABLE_NOTIFICATIONS=true`):
+- **`pluggedin_send_notification`** - Send custom notifications with optional email delivery
+- **`pluggedin_list_notifications`** - List notifications with filters
+- **`pluggedin_mark_notification_done`** - Mark a notification as done/read
+- **`pluggedin_delete_notification`** - Delete a notification
 
 ### ⚡ Dynamic MCP Tools (From Connected Servers)
 These tools come from your configured MCP servers and can be turned on/off:
@@ -128,7 +145,7 @@ The discovery tool intelligently shows both categories, giving AI models immedia
 # Quick discovery - returns cached data instantly
 pluggedin_discover_tools()
 
-# Force refresh - shows current tools + runs background discovery  
+# Force refresh - shows current tools + runs background discovery
 pluggedin_discover_tools({"force_refresh": true})
 
 # Discover specific server
@@ -139,7 +156,7 @@ pluggedin_discover_tools({"server_uuid": "uuid-here"})
 ```
 ## 🔧 Static Built-in Tools (Always Available):
 1. **pluggedin_discover_tools** - Smart discovery with caching
-2. **pluggedin_rag_query** - RAG v2 search across documents with AI filtering  
+2. **pluggedin_rag_query** - RAG v2 search across documents with AI filtering
 3. **pluggedin_send_notification** - Send notifications
 4. **pluggedin_create_document** - (Coming Soon) Create AI-generated documents
 
@@ -215,7 +232,7 @@ npx -y @pluggedin/pluggedin-mcp-proxy@1.0.0 --pluggedin-api-key YOUR_API_KEY
 
 #### Claude Desktop
 
-Add the following to your Claude Desktop configuration:
+**Basic Configuration** (Core tools only):
 
 ```json
 {
@@ -231,9 +248,28 @@ Add the following to your Claude Desktop configuration:
 }
 ```
 
+**Full Configuration** (All optional tools enabled):
+
+```json
+{
+  "mcpServers": {
+    "pluggedin": {
+      "command": "npx",
+      "args": ["-y", "@pluggedin/pluggedin-mcp-proxy@latest"],
+      "env": {
+        "PLUGGEDIN_API_KEY": "YOUR_API_KEY",
+        "PLUGGEDIN_ENABLE_KNOWLEDGE_BASE": "true",
+        "PLUGGEDIN_ENABLE_DOCUMENTS": "true",
+        "PLUGGEDIN_ENABLE_NOTIFICATIONS": "true"
+      }
+    }
+  }
+}
+```
+
 #### Cline
 
-Add the following to your Cline configuration:
+**Basic Configuration** (Core tools only):
 
 ```json
 {
@@ -243,6 +279,25 @@ Add the following to your Cline configuration:
       "args": ["-y", "@pluggedin/pluggedin-mcp-proxy@latest"],
       "env": {
         "PLUGGEDIN_API_KEY": "YOUR_API_KEY"
+      }
+    }
+  }
+}
+```
+
+**Full Configuration** (All optional tools enabled):
+
+```json
+{
+  "mcpServers": {
+    "pluggedin": {
+      "command": "npx",
+      "args": ["-y", "@pluggedin/pluggedin-mcp-proxy@latest"],
+      "env": {
+        "PLUGGEDIN_API_KEY": "YOUR_API_KEY",
+        "PLUGGEDIN_ENABLE_KNOWLEDGE_BASE": "true",
+        "PLUGGEDIN_ENABLE_DOCUMENTS": "true",
+        "PLUGGEDIN_ENABLE_NOTIFICATIONS": "true"
       }
     }
   }
@@ -265,6 +320,9 @@ npx -y @pluggedin/pluggedin-mcp-proxy@latest --pluggedin-api-key YOUR_API_KEY
 |----------|-------------|----------|---------|
 | `PLUGGEDIN_API_KEY` | API key from plugged.in App | Yes | - |
 | `PLUGGEDIN_API_BASE_URL` | Base URL for plugged.in App | No | `https://plugged.in` |
+| `PLUGGEDIN_ENABLE_KNOWLEDGE_BASE` | Enable Knowledge Base/RAG tools | No | `false` |
+| `PLUGGEDIN_ENABLE_DOCUMENTS` | Enable Document Management tools | No | `false` |
+| `PLUGGEDIN_ENABLE_NOTIFICATIONS` | Enable Notification Management tools | No | `false` |
 
 ### Command Line Arguments
 
@@ -442,7 +500,7 @@ MCP Client  →  plugged.in MCP Hub  →  (Plan → Act → Reflect)
 - Act — call tools from the unified catalog; route safely across STDIO/SSE/HTTP servers.
 - Reflect — persist outcomes into Memory and Knowledge (documents, notes, artifacts) to improve subsequent steps.
 
-**Safety & Ops**  
+**Safety & Ops**
 Enable `--require-api-auth` in Streamable HTTP mode; use allowlists for commands, arguments, and env. Combine server‑level validation with client‑side prompts hardened against prompt‑injection. Leverage existing logging/telemetry to track tool usage and document mutations.
 
 ## 🏗️ System Architecture
@@ -530,7 +588,7 @@ The plugged.in MCP Proxy implements comprehensive security measures to protect y
   - RFC 7230 compliant header name validation
   - Control character detection
   - Header size limits (8KB max)
-- **Rate Limiting**: 
+- **Rate Limiting**:
   - Tool calls: 60 requests per minute
   - API calls: 100 requests per minute
 - **Error Sanitization**: Prevents information disclosure by sanitizing error messages

@@ -55,3 +55,16 @@ export const JSON_RPC_ERROR_CODES = {
   /** Server error - Generic application error (session not found, etc.) */
   APPLICATION_ERROR: -32000,
 } as const;
+
+/**
+ * Feature flags for optional tool categories
+ * Set these environment variables to 'true' to enable specific tool categories
+ */
+export const FEATURE_FLAGS = {
+  /** Enable Knowledge Base / RAG tools (pluggedin_ask_knowledge_base) */
+  ENABLE_KNOWLEDGE_BASE: process.env.PLUGGEDIN_ENABLE_KNOWLEDGE_BASE === 'true',
+  /** Enable Document Management tools (create, list, search, get, update) */
+  ENABLE_DOCUMENTS: process.env.PLUGGEDIN_ENABLE_DOCUMENTS === 'true',
+  /** Enable Notification Management tools (send, list, mark done, delete) */
+  ENABLE_NOTIFICATIONS: process.env.PLUGGEDIN_ENABLE_NOTIFICATIONS === 'true',
+} as const;
